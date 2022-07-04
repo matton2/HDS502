@@ -1,0 +1,163 @@
+---
+title: "HDS502"
+author: "Matthew Onimus"
+date: "03Jul2022"
+output:
+  html_document:
+    theme: "spacelab"
+    code_folding: show
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scoll: false
+  pdf_document:
+    latex_engine: pdflatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Set Selection
+
+I choose the Maternal Health Risk Data Set Data Set (https://archive.ics.uci.edu/ml/datasets/Maternal+Health+Risk+Data+Set).  The data set contains 1014 observations with 7 variables:
+
+ - Age: Any ages in years when a women during pregnant.
+ - SystolicBP: Upper value of Blood Pressure in mmHg, another significant attribute during pregnancy.
+ - DiastolicBP: Lower value of Blood Pressure in mmHg, another significant attribute during pregnancy.
+ - BS: Blood glucose levels is in terms of a molar concentration, mmol/L.
+ - HeartRate: A normal resting heart rate in beats per minute.
+ - Risk Level: Predicted Risk Intensity Level during pregnancy considering the previous attribute.
+
+## R Set Up and Data Read
+
+I will start by loading the in the packages to be used for the initial data analysis.  I will mainly be working in the `tidyverse` ecosystem.
+
+```{r set up, warning=FALSE, message=FALSE}
+library(tidyverse) # used for reading data, data cleaning, visualizations
+library(rlang) # fancy data masking functions
+library(kableExtra) # used to create tables in the document
+library(GGally) # used to create the pairs plot
+library(cowplot) # used to combine plots together
+library(rstatix) # used for a pairwise t test
+
+sessionInfo()
+```
+
+Next, we need to read the data in to R.  It was provided in .csv format from UCI.  I will change the outcome variable, 'Risk Level', to a factor as well. 
+
+```{r readData, warning=FALSE, message=FALSE}
+
+maternalHealth <- read_csv("Maternal Health Risk Data Set.csv") %>% 
+  mutate(RiskLevel = factor(RiskLevel,
+                            levels = c('low risk', 'mid risk', 'high risk')))
+
+# kbl(maternalHealth) %>%
+#   kable_styling()
+
+
+```
+
+## Data Exploration
+
+I will start my exploration by creating some summary stats for my data and then creating a few plots to visualize the distribution across the outcome variable.
+
+```{r summaryStats}
+
+summary(maternalHealth)
+
+```
+
+I will end up creating visualizations for the variables in the data set but there are 2 variables I am going to be particular interested in.  The first is age, I see I have a min of 10 and a max of 70, both of those seem pretty atypical for pregnancies.  The second is heart rate; the min of 7 seems much too low to be an accurate measurement.
+
+I will start by creating histogram plots for age and heart rate to see how skewed this distributions may be.
+For the age plot, I will be using a bin width of 1.
+
+```{r ageHistPlots}
+
+ggplot(maternalHealth, aes(x = Age)) +
+  geom_histogram(binwidth = 1) + 
+  theme_classic() +
+  labs(
+    title = "Age Distrubtion of Maternal Health Data Set",
+    subtitle = "Binwidth set to 1"
+  )
+
+```
+
+As expected, the data is slightly skewed to a younger population but the distrubtion does not look as bad as I thought it might.  
+
+```{r heartHistPlots}
+
+ggplot(maternalHealth, aes(x = HeartRate)) +
+  geom_histogram(binwidth = 1) + 
+  theme_classic() +
+  labs(
+    title = "Heart Rate Distrubtion of Maternal Health Data Set",
+    subtitle = "Binwidth set to 1"
+  )
+
+```
+
+Based upon the heart rate histogram, I am going to remove the heart rate of 7, that measurement is an outlier.  
+
+```{r cleanData1}
+
+maternalHealthClean1 <- maternalHealth %>% 
+  filter(HeartRate > 50)
+```
+
+Next, we are going to see if any our of the variables have any colinearity using a `pairs` plot.
+
+```{r pairsPlot}
+
+ggpairs(select(maternalHealthClean1, -RiskLevel))
+
+
+```
+
+Fortunately, it appears like the only highly correlated variables are systolic and diastolic blood pressure which is not surprising.
+
+Finally, we will create some visualizations to assess the variablity in relation to our outcome variable.  I will not be looking at the body temperature variable since those summary stats indicate the data has little spread.  I will be creating a scatter/boxplot combo, a plot I use pretty extensively.
+
+```{r outcomePlots}
+
+makeMyPlot <- function(data, outcome, var) {
+  ggplot(data, aes(x = {{outcome}}, y = {{var}})) +
+    geom_boxplot(aes(fill = {{outcome}}), alpha = 0.2) +
+    geom_jitter(aes(color = {{outcome}}))  +
+    theme_classic() + 
+    labs(
+      title = paste(as_string(ensym(var)), "plotted against", as_string(ensym(outcome)))
+    ) +
+    theme(legend.position = 'none')
+}
+
+p1 <- makeMyPlot(maternalHealthClean1, RiskLevel, Age)
+p2 <- makeMyPlot(maternalHealthClean1, RiskLevel, SystolicBP)
+p3 <- makeMyPlot(maternalHealthClean1, RiskLevel, DiastolicBP)
+p4 <- makeMyPlot(maternalHealthClean1, RiskLevel, BS)
+p5 <- makeMyPlot(maternalHealthClean1, RiskLevel, HeartRate)
+
+plot_grid(p1, p2, p3, p4, p5)
+
+
+```
+
+Based upon the plots, it appears like there may be a number of indicator for a high risk pregnancy including age, systolic blood pressure, and blood sugar.  It may be harder to identify a low vs mid risk pregnancy.
+
+## Statistical Test
+
+Since I have 3 possible outcomes, a simple t test will not work.  I will need to use a pairwise t-test to compare across the three groups.  I will choose the systolic blood pressure variable and hypothesis that I should see a difference in means between the outcome groups.
+
+```{r ttest}
+
+pwt <- maternalHealthClean1 %>%
+  pairwise_t_test(SystolicBP ~ RiskLevel, p.adjust.method = "bonferroni")
+
+kbl(pwt) %>%
+  kable_styling(latex_options = "HOLD_position")
+
+```
+
+Based upon the results of the pairwise t test, each level is significantly different from each other with the low and high being the most(?).
