@@ -1,0 +1,170 @@
+---
+title: "HDS502 - Assignment 2"
+author: "Matthew Onimus"
+date: "10Jul2022"
+output:
+  pdf_document:
+    latex_engine: pdflatex
+  html_document:
+    theme: "spacelab"
+    code_folding: show
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scoll: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Set Up and Data Read
+
+I will start by loading the in the packages to be used for the initial data analysis.  I will mainly be working in the `tidyverse` ecosystem.
+
+```{r set up, warning=FALSE, message=FALSE}
+library(tidyverse) # used for reading data, data cleaning, visualizations
+library(haven) # used to read in SAS, Strata, etc. files
+library(survey) # used for assignment 4
+library(foreign) # used for assignment 4
+library(tidymodels) # a group of packages used to build models
+library(here) # used for easy file path finding
+library(rlang) # fancy data masking functions
+library(kableExtra) # used to create tables in the document
+
+sessionInfo()
+```
+
+Next, we need to read the data in to R.  It was provided in .dta format from MEDS.  
+
+```{r readData, warning=FALSE, message=FALSE}
+
+h209 <- read_stata(here('assignment2/h209.dta'))
+
+
+```
+
+## Reproducing Example 4
+
+I will start by reproducing example 4 (https://github.com/HHS-AHRQ/MEPS/blob/master/R/workshop_exercises/exercise_4.R) before creating my own model based on the recommended outcome variables.
+
+```{r example4}
+
+# Keep only needed variables --------------------------------------------------
+
+h209Sub <- h209 %>%
+  select(DUPERSID, VARPSU, VARSTR,
+         ADFLST42, AGELAST, SEX, RACETHX, INSCOV18, matches("SAQ"))
+
+# Create variables ------------------------------------------------------------
+#  - Convert ADFLST42 from 1/2 to 0/1 (for logistic regression)
+#  - Create 'subpop' to exclude people with Missing 'ADFLST42'
+
+
+h209x <- h209Sub %>%
+  mutate(
+    
+    # Convert outcome from 1/2 to 0/1:
+    flu_shot = case_when(
+      ADFLST42 == 1 ~ 1,
+      ADFLST42 == 2 ~ 0,
+      # note, case when is more sensitive now and will not 
+      # coerce variables for you, you need to explicitly state `as.numeric` 
+      # for this to run
+      TRUE ~ as.numeric(ADFLST42)),
+    
+    # Create subpop to exclude Missings
+    subpop = (ADFLST42 >= 0))
+
+saq_dsgn = svydesign(
+  id = ~VARPSU,
+  strata = ~VARSTR,
+  weights = ~SAQWT18F,
+  data = h209x,
+  nest = TRUE)
+
+flu_dsgn = subset(saq_dsgn, subpop)
+
+
+# QC sub-design
+saq_dsgn$variables %>% count(flu_shot)
+flu_dsgn$variables %>% count(flu_shot)
+
+# Calculate survey estimates ---------------------------------------------------
+#  - Percentage of people with a flu shot
+#  - Logistic regression: to identify demographic factors associated with
+#    receiving a flu shot  
+
+# Percentage of people with a flu shot
+svymean(~flu_shot, design = flu_dsgn)
+
+# Logistic regression
+# - specify 'family = quasibinomial' to get rid of warning messages
+
+svyglm(
+  flu_shot ~ AGELAST + as.factor(SEX) + as.factor(RACETHX) + as.factor(INSCOV18), 
+  design = flu_dsgn, family = quasibinomial) %>%  
+  summary
+
+```
+
+## Creating New Model
+
+I will be creating a similar model but for the doctor checking BP.  I will clean up the variables a little bit first to convert them into factors with the corresponding labels.  I will also remove any blood pressure results that are not a yes or no; these are the data that is represented by -15 and -1.
+
+```{r newModel}
+
+h209Clean <- h209 %>% 
+  select(DUPERSID, VARPSU, VARSTR, drCheckBP = ADBPCK42,
+         ADFLST42, AGELAST, SEX, RACETHX, INSCOV18, matches("SAQ")) %>% 
+  filter(drCheckBP >= 0) %>% 
+  mutate(
+    SEX = factor(if_else(SEX == 1, 'male', 'female'), levels = c('male', 'female')),
+    RACETHX = factor(case_when(
+      RACETHX == 1 ~ 'HISPANIC',
+      RACETHX == 2 ~ 'NON-HISPANIC WHITE',
+      RACETHX == 3 ~ 'NON-HISPANIC BLACK',
+      RACETHX == 4 ~ 'NON-HISPANIC ASIAN',
+      RACETHX == 5 ~ 'NON-HISPANIC OTHER/MULTIPLE'
+    )),
+    INSCOV18 = factor(case_when(
+      INSCOV18 == 1 ~ "private",
+      INSCOV18 == 2 ~ 'public',
+      INSCOV18 == 3 ~ 'uninsured'
+    )),
+    drCheckBP = factor(if_else(drCheckBP == 1, 'yes', 'no'))
+  )
+
+## check the count of the outcome variable
+
+h209Clean %>% count(drCheckBP) # note this match the expected from MEDS (https://meps.ahrq.gov/mepsweb/data_stats/download_data_files_codebook.jsp?PUFId=H209&varName=ADBPCK42)
+
+# I will use the same survey design as the example but I will update the 
+# model to reflect my cleaned up variables
+
+bpDsgn = svydesign(
+  id = ~VARPSU,
+  strata = ~VARSTR,
+  weights = ~SAQWT18F,
+  data = h209Clean,
+  nest = TRUE)
+
+
+# Percentage of people who had their BP checked
+svymean(~drCheckBP, design = bpDsgn)
+
+# Logistic regression
+# - specify 'family = quasibinomial' to get rid of warning messages
+
+svyglm(
+  drCheckBP ~ AGELAST + SEX + RACETHX + INSCOV18, 
+  design = bpDsgn, family = quasibinomial) %>%  
+  tidy() %>% 
+  kbl() %>%
+  kable_styling(latex_options = "HOLD_position")
+
+
+
+```
+
+Based upon the model results, there are a few interesting observations.  The first that being a female increases your odds of having your blood pressure checked relative to male.  The second is, relative to Hispanic, every other race has higher odds of having their blood pressure checked.  Finally, if you are hoping to have your blood pressure checked, having insurance is your best bet.
